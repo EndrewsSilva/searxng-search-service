@@ -7,6 +7,8 @@ from app.infra.search.flaresolverr_client import FlareSolverrClient
 from app.infra.search.datajud_client import DataJudClient
 from app.infra.search.jusbrasil_session import JusBrasilSession
 from app.application.user_cases.run_search import RunSearchUseCase
+from app.infra.graph.neo4j_client import Neo4jClient
+from app.application.user_cases.run_compliance_report import RunComplianceReportUseCase
 
 
 @lru_cache
@@ -50,4 +52,23 @@ def get_run_search_use_case():
         flaresolverr_client=get_flaresolverr_client(),
         datajud_client=get_datajud_client(),
         jusbrasil_session=get_jusbrasil_session(),
+    )
+
+
+@lru_cache
+def get_neo4j_client() -> Neo4jClient:
+    s = get_settings()
+    return Neo4jClient(
+        uri=s.NEO4J_URI,
+        username=s.NEO4J_USER,
+        password=s.NEO4J_PASSWORD,
+    )
+
+
+@lru_cache
+def get_compliance_use_case() -> RunComplianceReportUseCase:
+    return RunComplianceReportUseCase(
+        run_search=get_run_search_use_case(),
+        neo4j=get_neo4j_client(),
+        hf_token=get_settings().HF_TOKEN,
     )

@@ -6,3 +6,9 @@ pydantic-settings
 beautifulsoup4
 playwright
 curl_cffi
+
+# Graph RAG
+neo4j==5.27.0
+sentence-transformers==3.4.1
+torch==2.5.1
+huggingface-hub==0.28.1

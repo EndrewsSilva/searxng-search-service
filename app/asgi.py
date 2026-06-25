@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 
 from app.domain.models.search import SearchRequest
+from app.domain.models.compliance import ComplianceRequest
 from app.infra.containers.services_container import (
     get_flaresolverr_client,
     get_jusbrasil_session,
     get_run_search_use_case,
+    get_compliance_use_case,
 )
 from app.interface.config.settings import AppSettings
 
@@ -50,6 +52,21 @@ async def search(
                 "success": False,
                 "error": str(e)
             }
+        )
+
+
+@app.post("/compliance-report")
+async def compliance_report(
+    payload: ComplianceRequest,
+    use_case=Depends(get_compliance_use_case),
+):
+    try:
+        report = await use_case.execute(payload.query)
+        return report
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"success": False, "error": str(e)},
         )
 
 
