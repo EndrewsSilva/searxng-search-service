@@ -23,5 +23,10 @@ class AppSettings(BaseSettings):
     # Cadastro gratuito em: https://api-publica.datajud.cnj.jus.br/
     DATAJUD_API_KEY: str = ""
 
+    # Credenciais da conta gratuita no JusBrasil (para acesso autenticado).
+    # Conta gratuita em: https://www.jusbrasil.com.br/cadastro
+    JUSBRASIL_EMAIL: str = ""
+    JUSBRASIL_PASSWORD: str = ""
+
     class Config:
         env_file = ".env"

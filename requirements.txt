@@ -4,3 +4,5 @@ httpx
 pydantic
 pydantic-settings
 beautifulsoup4
+playwright
+curl_cffi

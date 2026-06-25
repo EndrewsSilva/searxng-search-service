@@ -5,6 +5,7 @@ from app.interface.config.settings import AppSettings
 from app.infra.search.searxng_client import SearxngClient
 from app.infra.search.flaresolverr_client import FlareSolverrClient
 from app.infra.search.datajud_client import DataJudClient
+from app.infra.search.jusbrasil_session import JusBrasilSession
 from app.application.user_cases.run_search import RunSearchUseCase
 
 
@@ -31,9 +32,22 @@ def get_datajud_client() -> DataJudClient:
 
 
 @lru_cache
+def get_jusbrasil_session() -> Optional[JusBrasilSession]:
+    settings = get_settings()
+    if not settings.JUSBRASIL_EMAIL or not settings.JUSBRASIL_PASSWORD:
+        return None
+    return JusBrasilSession(
+        flaresolverr_url=settings.FLARESOLVERR_URL,
+        email=settings.JUSBRASIL_EMAIL,
+        password=settings.JUSBRASIL_PASSWORD,
+    )
+
+
+@lru_cache
 def get_run_search_use_case():
     return RunSearchUseCase(
         search_client=get_search_client(),
         flaresolverr_client=get_flaresolverr_client(),
         datajud_client=get_datajud_client(),
+        jusbrasil_session=get_jusbrasil_session(),
     )

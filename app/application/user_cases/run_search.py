@@ -37,10 +37,11 @@ class RunSearchUseCase:
     MIN_SEARCH_DELAY = 3.0
     MAX_SEARCH_DELAY = 7.0
 
-    def __init__(self, search_client, flaresolverr_client, datajud_client=None):
+    def __init__(self, search_client, flaresolverr_client, datajud_client=None, jusbrasil_session=None):
         self.search_client = search_client
         self.flaresolverr_client = flaresolverr_client
         self.datajud_client = datajud_client
+        self.jusbrasil_session = jusbrasil_session
 
         self.flaresolverr_semaphore = asyncio.Semaphore(3)
         self.domain_limiter = DomainLimiter(delay=2.5)
@@ -245,26 +246,44 @@ class RunSearchUseCase:
             process_entities=all_process_entities,
         )
 
+    async def _fetch_jusbrasil(self, url: str) -> str:
+        """Busca página do JusBrasil: usa sessão autenticada se disponível,
+        caso contrário cai no FlareSolverr sem autenticação."""
+        if self.jusbrasil_session:
+            try:
+                html = await self.jusbrasil_session.get_page(url)
+                if html and not AntiBotDetector.is_blocked(html):
+                    return html
+                # Sessão retornou bloqueio: invalida e tenta sem auth
+                logger.warning(f"[JusBrasilSession] Sessão bloqueada, invalidando: {url}")
+                self.jusbrasil_session.invalidate()
+            except Exception as e:
+                logger.error(f"[JusBrasilSession] Erro ao buscar {url}: {str(e)}")
+
+        return await self._fetch_with_resilience(url)
+
     async def _direct_legal_discovery(self, query: str) -> list[dict]:
         """Scrapa as páginas de busca dos sites jurídicos diretamente via FlareSolverr,
         sem depender de motores de busca. Extrai links de processos encontrados."""
         query_encoded = quote(query)
-        search_pages = [
-            f"https://www.jusbrasil.com.br/busca?q={query_encoded}",
-            f"https://www.escavador.com/busca?q={query_encoded}",
-        ]
+        jusbrasil_url = f"https://www.jusbrasil.com.br/busca?q={query_encoded}"
+        escavador_url = f"https://www.escavador.com/busca?q={query_encoded}"
+
+        jus_label = "JusBrasil (autenticado)" if self.jusbrasil_session else "JusBrasil"
 
         print("\n" + "=" * 100)
-        print("[DIRECT LEGAL DISCOVERY] Acessando sites jurídicos diretamente via FlareSolverr")
-        for url in search_pages:
-            print(f"  → {url}")
+        print("[DIRECT LEGAL DISCOVERY] Acessando sites jurídicos diretamente")
+        print(f"  → {jusbrasil_url} [{jus_label}]")
+        print(f"  → {escavador_url}")
         print("=" * 100 + "\n")
 
         htmls = await asyncio.gather(
-            *[self._fetch_with_resilience(url) for url in search_pages],
+            self._fetch_jusbrasil(jusbrasil_url),
+            self._fetch_with_resilience(escavador_url),
             return_exceptions=True,
         )
 
+        search_pages = [jusbrasil_url, escavador_url]
         results = []
         for url, html in zip(search_pages, htmls):
             domain = self._extract_domain(url)
@@ -813,7 +832,13 @@ class RunSearchUseCase:
             if task:
                 return await task
 
-            task = asyncio.create_task(self._fetch_with_resilience(url))
+            domain = self._extract_domain(url)
+            if "jusbrasil" in domain:
+                fetch_coro = self._fetch_jusbrasil(url)
+            else:
+                fetch_coro = self._fetch_with_resilience(url)
+
+            task = asyncio.create_task(fetch_coro)
             self._inflight[url] = task
 
         try:
