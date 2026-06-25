@@ -51,30 +51,30 @@ class RunSearchUseCase:
 
     async def execute(self, query: str):
         try:
-            datajud_coro = (
-                self.datajud_client.search_by_name(query)
-                if self.datajud_client
-                else asyncio.sleep(0)
-            )
-
-            search_results, legal_results, datajud_raw = await asyncio.gather(
+            search_results, legal_results = await asyncio.gather(
                 self._search_all_strategies(query),
                 self._direct_legal_discovery(query),
-                datajud_coro,
                 return_exceptions=True,
             )
 
             raw_results = []
+            discovered_cnj_numbers: list[str] = []
+
             for r in [search_results, legal_results]:
                 if isinstance(r, Exception):
                     logger.error(f"[SEARCH FAIL] {str(r)}")
                 else:
                     raw_results.extend(r)
+                    for item in r:
+                        numbers = self._extract_cnj_from_url(item.get("url", ""))
+                        discovered_cnj_numbers.extend(numbers)
 
+            # Enriquece com DataJud os números encontrados via scraping/discovery
             datajud_entities: list[ProcessEntity] = []
-            if self.datajud_client and not isinstance(datajud_raw, Exception) and datajud_raw:
-                datajud_entities = datajud_raw
-                print(f"\n[DataJud] {len(datajud_entities)} processos encontrados via API CNJ")
+            if discovered_cnj_numbers:
+                unique_numbers = list(dict.fromkeys(discovered_cnj_numbers))
+                if self.datajud_client:
+                    datajud_entities = await self.datajud_client.enrich_by_numbers(unique_numbers)
 
         except Exception as e:
             logger.error(f"[SEARCH FAIL] Falha ao buscar: {str(e)}")
@@ -747,6 +747,13 @@ class RunSearchUseCase:
             )
             or "/processos-judiciais/" in url
         )
+
+    _CNJ_RE = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}")
+
+    @classmethod
+    def _extract_cnj_from_url(cls, url: str) -> list[str]:
+        """Extrai números CNJ formatados de URLs (ex: de URLs do Escavador)."""
+        return cls._CNJ_RE.findall(url or "")
 
     @staticmethod
     def _normalize_text(text: str) -> str:

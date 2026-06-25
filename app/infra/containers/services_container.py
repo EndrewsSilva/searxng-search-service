@@ -24,10 +24,9 @@ def get_flaresolverr_client():
 
 
 @lru_cache
-def get_datajud_client() -> Optional[DataJudClient]:
-    key = get_settings().DATAJUD_API_KEY
-    if not key:
-        return None
+def get_datajud_client() -> DataJudClient:
+    # Usa chave do .env se configurada, caso contrário usa a chave pública do CNJ
+    key = get_settings().DATAJUD_API_KEY or DataJudClient.PUBLIC_KEY
     return DataJudClient(api_key=key)
 
 

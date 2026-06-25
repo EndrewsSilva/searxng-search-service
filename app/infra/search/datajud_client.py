@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -10,116 +11,142 @@ from app.domain.models.search import ProcessEntity
 logger = logging.getLogger(__name__)
 
 
+# Mapeamento J.TT → índice DataJud, derivado do formato CNJ: NNNNNNN-DD.AAAA.J.TT.OOOO
+_J8_TJ = {
+    1: "tjac", 2: "tjal", 3: "tjap", 4: "tjam", 5: "tjba",
+    6: "tjce", 7: "tjdft", 8: "tjes", 9: "tjgo", 10: "tjma",
+    11: "tjmt", 12: "tjms", 13: "tjmg", 14: "tjpa", 15: "tjpb",
+    16: "tjpe", 17: "tjpi", 18: "tjpr", 19: "tjrj", 20: "tjrn",
+    21: "tjro", 22: "tjrr", 23: "tjrs", 24: "tjsc", 25: "tjse",
+    26: "tjsp", 27: "tjto",
+}
+
+_CNJ_PATTERN = re.compile(
+    r"(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})"
+)
+
+
+def _tribunal_from_cnj(numero: str) -> Optional[str]:
+    """Deriva o índice DataJud a partir do número CNJ formatado."""
+    m = _CNJ_PATTERN.search(numero)
+    if not m:
+        return None
+
+    j, tt = int(m.group(4)), int(m.group(5))
+
+    if j == 8:
+        return _J8_TJ.get(tt)
+    if j == 4:
+        return f"trf{tt}" if 1 <= tt <= 6 else None
+    if j == 5:
+        return f"trt{tt}" if 1 <= tt <= 24 else None
+    if j == 3:
+        return "stj"
+    if j == 1:
+        return "stf"
+    if j == 9:
+        return "tjdft"
+
+    return None
+
+
+def _normalize_cnj(numero: str) -> str:
+    """Remove separadores do número CNJ para busca no DataJud."""
+    return re.sub(r"[.\-]", "", numero)
+
+
+def _format_datajud_date(raw: str) -> str:
+    """Converte 'YYYYMMDDHHmmss' para 'YYYY-MM-DD'."""
+    raw = (raw or "").strip()
+    if len(raw) >= 8 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    return raw[:10]  # já está em ISO ou outro formato
+
+
 class DataJudClient:
     """
     Cliente para a API pública do DataJud (CNJ).
 
-    Registro gratuito em: https://api-publica.datajud.cnj.jus.br/
-    Documentação: https://datajud-wiki.cnj.jus.br/
+    Chave pública (sem cadastro):
+        APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==
 
-    Coloque a chave no .env:
-        DATAJUD_API_KEY=ApiKey <sua_chave_aqui>
+    Limitações da chave pública:
+    - NÃO permite busca por nome de parte (nomePartes) — campo LGPD protegido
+    - PERMITE buscar processo por número e obter dados estruturados completos
+
+    Fluxo recomendado:
+        1. Scraping (JusBrasil/Escavador) descobre números de processo
+        2. DataJud enriquece cada número com dados oficiais do CNJ
     """
 
     BASE_URL = "https://api-publica.datajud.cnj.jus.br"
+    PUBLIC_KEY = "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw=="
 
-    # Todos os tribunais disponíveis no DataJud
-    ALL_TRIBUNALS = [
-        # Justiça Estadual (27 TJs)
-        "tjac", "tjal", "tjam", "tjap", "tjba", "tjce", "tjdft",
-        "tjes", "tjgo", "tjma", "tjmg", "tjms", "tjmt", "tjpa",
-        "tjpb", "tjpe", "tjpi", "tjpr", "tjrj", "tjrn", "tjro",
-        "tjrr", "tjrs", "tjsc", "tjse", "tjsp", "tjto",
-        # Justiça Federal (TRFs)
-        "trf1", "trf2", "trf3", "trf4", "trf5",
-        # Justiça do Trabalho (TRTs)
-        "trt1", "trt2", "trt3", "trt4", "trt5", "trt6",
-        "trt7", "trt8", "trt9", "trt10", "trt11", "trt12",
-        "trt13", "trt14", "trt15", "trt16", "trt17", "trt18",
-        "trt19", "trt20", "trt21", "trt22", "trt23", "trt24",
-        # Superiores
-        "stj", "tst",
-    ]
-
-    def __init__(self, api_key: str, max_concurrent: int = 15):
-        self.api_key = api_key
+    def __init__(self, api_key: Optional[str] = None, max_concurrent: int = 10):
+        self.api_key = api_key or self.PUBLIC_KEY
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout=15.0, connect=5.0),
             headers={
-                "Authorization": api_key,
+                "Authorization": self.api_key,
                 "Content-Type": "application/json",
             },
-            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
 
-    async def search_by_name(
-        self,
-        name: str,
-        results_per_tribunal: int = 5,
-        tribunals: Optional[list[str]] = None,
+    async def enrich_by_numbers(
+        self, process_numbers: list[str]
     ) -> list[ProcessEntity]:
         """
-        Busca processos pelo nome da parte em todos os tribunais em paralelo.
-        Retorna lista de ProcessEntity pronta para uso no pipeline.
+        Recebe números CNJ formatados (ex: '1234567-89.2023.8.26.0001'),
+        determina o tribunal de cada um e consulta o DataJud.
+        Retorna ProcessEntity com dados estruturados oficiais.
         """
-        target_tribunals = tribunals or self.ALL_TRIBUNALS
+        if not process_numbers:
+            return []
 
-        tasks = [
-            self._search_tribunal(tribunal, name, results_per_tribunal)
-            for tribunal in target_tribunals
-        ]
+        tasks = []
+        meta = []  # (numero_original, tribunal) para log
+
+        for numero in process_numbers:
+            tribunal = _tribunal_from_cnj(numero)
+            if not tribunal:
+                logger.debug(f"[DataJud] Não foi possível determinar tribunal: {numero}")
+                continue
+            numero_clean = _normalize_cnj(numero)
+            tasks.append(self._fetch_process(tribunal, numero_clean, numero))
+            meta.append((numero, tribunal))
+
+        if not tasks:
+            return []
 
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        entities: list[ProcessEntity] = []
-        tribunals_with_results = 0
-
-        for tribunal, result in zip(target_tribunals, responses):
+        entities = []
+        found = 0
+        for (numero, tribunal), result in zip(meta, responses):
             if isinstance(result, Exception):
-                logger.debug(f"[DataJud] {tribunal}: {str(result)}")
-                continue
-            if result:
-                entities.extend(result)
-                tribunals_with_results += 1
+                logger.debug(f"[DataJud] {tribunal}/{numero}: {str(result)}")
+            elif result:
+                entities.append(result)
+                found += 1
 
         print(
-            f"[DataJud] name='{name}' "
-            f"tribunais_pesquisados={len(target_tribunals)} "
-            f"tribunais_com_resultado={tribunals_with_results} "
-            f"total_processos={len(entities)}"
+            f"[DataJud] enrich: {len(process_numbers)} número(s) → "
+            f"{found} processo(s) encontrado(s) no CNJ"
         )
 
         return entities
 
-    async def _search_tribunal(
-        self, tribunal: str, name: str, size: int
-    ) -> list[ProcessEntity]:
+    async def _fetch_process(
+        self, tribunal: str, numero_clean: str, numero_original: str
+    ) -> Optional[ProcessEntity]:
         url = f"{self.BASE_URL}/api_publica_{tribunal}/_search"
 
         payload = {
-            "query": {
-                "match": {
-                    "nomePartes": {
-                        "query": name,
-                        "operator": "and",
-                    }
-                }
-            },
-            "size": size,
-            "_source": [
-                "numeroProcesso",
-                "tribunal",
-                "grau",
-                "dataAjuizamento",
-                "classe",
-                "assuntos",
-                "orgaoJulgador",
-                "partes",
-                "movimentos",
-                "valor",
-            ],
+            "query": {"term": {"numeroProcesso": numero_clean}},
+            "size": 1,
         }
 
         async with self.semaphore:
@@ -127,89 +154,79 @@ class DataJudClient:
                 response = await self.client.post(url, json=payload)
 
                 if response.status_code == 404:
-                    return []
+                    return None
 
                 response.raise_for_status()
 
                 hits = response.json().get("hits", {}).get("hits", [])
+                if not hits:
+                    return None
 
-                return [
-                    self._to_process_entity(hit["_source"], tribunal)
-                    for hit in hits
-                    if hit.get("_source")
-                ]
+                return self._to_process_entity(hits[0]["_source"], tribunal, numero_original)
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code not in (404, 503):
-                    logger.debug(
-                        f"[DataJud] {tribunal} HTTP {e.response.status_code}"
-                    )
-                return []
+                    logger.debug(f"[DataJud] {tribunal} HTTP {e.response.status_code}")
+                return None
 
             except Exception as e:
-                logger.debug(f"[DataJud] {tribunal}: {str(e)}")
-                return []
+                logger.debug(f"[DataJud] {tribunal}/{numero_clean}: {str(e)}")
+                return None
 
     @staticmethod
-    def _to_process_entity(raw: dict, tribunal_fallback: str) -> ProcessEntity:
-        numero = raw.get("numeroProcesso", "")
+    def _to_process_entity(raw: dict, tribunal_fallback: str, numero_original: str) -> ProcessEntity:
+        numero = numero_original
         tribunal = (raw.get("tribunal") or tribunal_fallback).upper()
-
-        partes = raw.get("partes") or []
-        polo_ativo = [p["nome"] for p in partes if p.get("polo") == "ATIVO"]
-        polo_passivo = [p["nome"] for p in partes if p.get("polo") == "PASSIVO"]
-
-        assuntos = raw.get("assuntos") or []
-        subject_names = ", ".join(a.get("nome", "") for a in assuntos[:3] if a.get("nome"))
 
         classe = raw.get("classe") or {}
         classe_nome = classe.get("nome", "")
 
-        movimentos = raw.get("movimentos") or []
-        ultimo_mov = ""
-        if movimentos:
-            ultimo = max(movimentos, key=lambda m: m.get("dataHora", ""), default=None)
-            if ultimo:
-                ultimo_mov = (ultimo.get("dataHora") or "")[:10]
+        assuntos = raw.get("assuntos") or []
+        subject_names = ", ".join(
+            a.get("nome", "") for a in assuntos[:3] if a.get("nome")
+        )
 
         orgao = raw.get("orgaoJulgador") or {}
 
-        data_ajuizamento = (raw.get("dataAjuizamento") or "")[:10]
+        movimentos = raw.get("movimentos") or []
+        ultimo_mov = ""
+        if movimentos:
+            ultimo = max(
+                movimentos,
+                key=lambda m: m.get("dataHora", ""),
+                default=None,
+            )
+            if ultimo:
+                ultimo_mov = (ultimo.get("dataHora") or "")[:10]
 
-        valor = raw.get("valor")
-        case_value = ""
-        if valor:
-            try:
-                case_value = f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            except (ValueError, TypeError):
-                pass
+        data_ajuizamento = _format_datajud_date(raw.get("dataAjuizamento", ""))
 
-        numero_clean = numero.replace(".", "").replace("-", "")
+        grau_map = {"G1": "1º Grau", "G2": "2º Grau", "JE": "Juizado Especial"}
+        grau = grau_map.get(raw.get("grau", ""), raw.get("grau", ""))
+
+        subject_full = " | ".join(filter(None, [classe_nome, subject_names, grau]))
+
+        numero_clean = re.sub(r"[.\-]", "", numero)
         source_url = (
             f"https://www.jusbrasil.com.br/processos/{numero_clean}"
             if numero_clean
-            else f"datajud://{tribunal_fallback}/{numero}"
+            else f"datajud://{tribunal_fallback}"
         )
-
-        subject_full = " | ".join(filter(None, [classe_nome, subject_names]))
 
         return ProcessEntity(
             source_url=source_url,
             title=f"{classe_nome} – {numero}" if classe_nome else numero,
             description=subject_full,
-            process_numbers=[numero] if numero else [],
-            has_process_number=bool(numero),
+            process_numbers=[numero],
+            has_process_number=True,
             status="",
             court=tribunal,
             subject=subject_full,
-            case_value=case_value,
+            case_value="",
             last_check=ultimo_mov,
             origin_location=orgao.get("nome", ""),
             origin_date=data_ajuizamento,
-            parties={
-                "polo_ativo": polo_ativo,
-                "polo_passivo": polo_passivo,
-            },
+            parties={},
             movements_count=len(movimentos),
             text_preview=None,
             source="datajud",
