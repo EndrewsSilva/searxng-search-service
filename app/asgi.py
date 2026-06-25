@@ -1,18 +1,31 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, HTTPException
 
 from app.domain.models.search import SearchRequest
 from app.infra.containers.services_container import (
     get_flaresolverr_client,
-    get_run_search_use_case,  # Importação da nossa factory atualizada
+    get_jusbrasil_session,
+    get_run_search_use_case,
 )
 from app.interface.config.settings import AppSettings
 
 APP_SETTINGS = AppSettings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    session = get_jusbrasil_session()
+    if session:
+        await session.close()
+
+
 app = FastAPI(
     title=APP_SETTINGS.NAME,
     description=APP_SETTINGS.DESCRIPTION,
-    version=APP_SETTINGS.VERSION
+    version=APP_SETTINGS.VERSION,
+    lifespan=lifespan,
 )
 
 

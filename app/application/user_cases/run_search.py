@@ -50,7 +50,11 @@ class RunSearchUseCase:
         self._inflight: dict[str, asyncio.Task] = {}
         self._inflight_lock = asyncio.Lock()
 
+        # Per-request cache: HTML already fetched during discovery, reused in scraping
+        self._page_cache: dict[str, str] = {}
+
     async def execute(self, query: str):
+        self._page_cache = {}
         try:
             search_results, legal_results = await asyncio.gather(
                 self._search_all_strategies(query),
@@ -295,6 +299,19 @@ class RunSearchUseCase:
 
             links = ProcessLinkExtractor.extract(html, url)
             print(f"[DIRECT LEGAL DISCOVERY] OK → {domain} | {len(links)} process links extraídos")
+
+            # Cache fetched HTML so the scraping loop reuses it without re-fetching
+            self._page_cache[url] = html
+
+            # Add the search/discovery page itself to the scraping queue:
+            # its __NEXT_DATA__ contains CNJ process numbers not available in profile pages
+            results.append({
+                "url": url,
+                "title": f"{query} - {domain}",
+                "content": "",
+                "engine": "direct",
+                "engines": ["direct"],
+            })
 
             for link in links:
                 results.append({
@@ -825,6 +842,11 @@ class RunSearchUseCase:
     async def _deduplicated_fetch(self, url: str) -> str:
         if not url:
             return ""
+
+        # Return pre-fetched HTML from discovery phase if available
+        cached = self._page_cache.pop(url, None)
+        if cached:
+            return cached
 
         async with self._inflight_lock:
             task = self._inflight.get(url)

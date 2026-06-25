@@ -17,6 +17,7 @@ class ProcessLinkExtractor:
         "/diarios/",
         "/pecas/",
         "/modelos-pecas/",
+        "/peca-",       # document pieces — premium paywall, no process numbers
         "/processos/nome/",
         "assets.",
         "static.",
@@ -105,7 +106,7 @@ class ProcessLinkExtractor:
                 continue
             url = val.get("url", "")
             if url and "jusbrasil.com.br" in url:
-                if "/processos/" in url and "/processos/nome/" not in url:
+                if "/processos/" in url and "/processos/nome/" not in url and "/peca-" not in url:
                     links.append(url)
                 elif _cnj_re.search(url):
                     links.append(url)

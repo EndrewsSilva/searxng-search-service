@@ -26,7 +26,10 @@ class ProcessEntityExtractor:
 
         title = cls._extract_title(soup)
         description = cls._extract_description(soup)
-        searchable_text = f"{title} {description} {text}"
+
+        # JusBrasil (Next.js) embeds all data in __NEXT_DATA__ — invisible to get_text()
+        next_data_text = cls._extract_next_data_text(html or "")
+        searchable_text = f"{title} {description} {text} {next_data_text}"
 
         blocks = cls._split_process_blocks(searchable_text)
 
@@ -169,6 +172,15 @@ class ProcessEntityExtractor:
             return match.group(0).strip(" .,)")
 
         return fallback_url
+
+    @staticmethod
+    def _extract_next_data_text(html: str) -> str:
+        match = re.search(
+            r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+            html,
+            re.DOTALL,
+        )
+        return match.group(1) if match else ""
 
     @staticmethod
     def _extract_title(soup: BeautifulSoup) -> str:
