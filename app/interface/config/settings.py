@@ -19,5 +19,9 @@ class AppSettings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # Chave da API pública do DataJud (CNJ).
+    # Cadastro gratuito em: https://api-publica.datajud.cnj.jus.br/
+    DATAJUD_API_KEY: str = ""
+
     class Config:
         env_file = ".env"

@@ -5,6 +5,8 @@ import re
 import unicodedata
 from urllib.parse import urlparse, quote
 
+from typing import Optional
+
 from app.domain.models.search import SearchResponse, SearchResult, ProcessEntity
 from app.infra.search.html_parser import HTMLContentParser
 from app.infra.search.process_entity_extractor import ProcessEntityExtractor
@@ -35,9 +37,10 @@ class RunSearchUseCase:
     MIN_SEARCH_DELAY = 3.0
     MAX_SEARCH_DELAY = 7.0
 
-    def __init__(self, search_client, flaresolverr_client):
+    def __init__(self, search_client, flaresolverr_client, datajud_client=None):
         self.search_client = search_client
         self.flaresolverr_client = flaresolverr_client
+        self.datajud_client = datajud_client
 
         self.flaresolverr_semaphore = asyncio.Semaphore(3)
         self.domain_limiter = DomainLimiter(delay=2.5)
@@ -48,9 +51,16 @@ class RunSearchUseCase:
 
     async def execute(self, query: str):
         try:
-            search_results, legal_results = await asyncio.gather(
+            datajud_coro = (
+                self.datajud_client.search_by_name(query)
+                if self.datajud_client
+                else asyncio.sleep(0)
+            )
+
+            search_results, legal_results, datajud_raw = await asyncio.gather(
                 self._search_all_strategies(query),
                 self._direct_legal_discovery(query),
+                datajud_coro,
                 return_exceptions=True,
             )
 
@@ -60,6 +70,11 @@ class RunSearchUseCase:
                     logger.error(f"[SEARCH FAIL] {str(r)}")
                 else:
                     raw_results.extend(r)
+
+            datajud_entities: list[ProcessEntity] = []
+            if self.datajud_client and not isinstance(datajud_raw, Exception) and datajud_raw:
+                datajud_entities = datajud_raw
+                print(f"\n[DataJud] {len(datajud_entities)} processos encontrados via API CNJ")
 
         except Exception as e:
             logger.error(f"[SEARCH FAIL] Falha ao buscar: {str(e)}")
@@ -188,27 +203,32 @@ class RunSearchUseCase:
             )
 
         results = sorted(results, key=lambda result: result.score or 0, reverse=True)
-        process_entities = self._deduplicate_process_entities(process_entities)
+
+        scraped_entities = self._deduplicate_process_entities(process_entities)
+        all_process_entities = self._deduplicate_process_entities(
+            scraped_entities + datajud_entities
+        )
 
         print("\n" + "=" * 100)
         print("[PROCESS EXTRACTION SUMMARY]")
-        print("CANDIDATOS DE PROCESSO EXTRAÍDOS:", extracted_process_candidates)
-        print("PROCESSOS ACEITOS ANTES DO DEDUP:", accepted_process_entities)
-        print("PROCESSOS ÚNICOS APÓS DEDUP:", len(process_entities))
+        print("CANDIDATOS DE PROCESSO EXTRAÍDOS (scraping):", extracted_process_candidates)
+        print("PROCESSOS ACEITOS (scraping):", len(scraped_entities))
+        print("PROCESSOS VIA DATAJUD (API CNJ):", len(datajud_entities))
+        print("PROCESSOS ÚNICOS APÓS MERGE + DEDUP:", len(all_process_entities))
         print("=" * 100 + "\n")
 
         print("\n" + "=" * 100)
         print("[FINAL SUMMARY]")
         print("QUERY:", query)
         print("RESULTADOS RETORNADOS NO JSON:", len(results))
-        print("PROCESSOS ESTRUTURADOS:", len(process_entities))
+        print("PROCESSOS ESTRUTURADOS:", len(all_process_entities))
         print("=" * 100 + "\n")
 
         return SearchResponse(
             query=query,
             total_found=len(results),
             results=results,
-            process_entities=process_entities,
+            process_entities=all_process_entities,
         )
 
     async def _direct_legal_discovery(self, query: str) -> list[dict]:

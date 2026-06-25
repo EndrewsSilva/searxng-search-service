@@ -28,6 +28,8 @@ class ProcessEntity(BaseModel):
 
     text_preview: Optional[str] = None
 
+    source: Optional[str] = None
+
 
 class SearchResult(BaseModel):
     title: str
