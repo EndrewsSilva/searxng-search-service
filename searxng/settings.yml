@@ -2,7 +2,6 @@
 # SEARXNG - CONFIGURAÇÃO OTIMIZADA PARA BACKING GROUND CHECK / KYC
 # ==============================================================================
 
-# Mantém os parâmetros padrão seguros e mescla com as nossas customizações
 use_default_settings: true
 
 general:
@@ -10,80 +9,71 @@ general:
   instance_name: "KYC Search Service"
 
 server:
-  # Chave secreta obrigatória para criptografia de sessão do SearXNG
   secret_key: "kyc_secret_key_altere_em_producao"
-  # Porta interna padrão do container
   port: 8080
   bind_address: "0.0.0.0"
-  # Desativamos o limiter interno para evitar que seu próprio Agent tome 429 do SearXNG
   limiter: false
   image_proxy: false
 
 search:
-  # 0 = Desativado (Crucial para achar termos de crimes, fraudes e mídia negativa sem filtro)
   safe_search: 0
   autocomplete: ""
-  # Garante que o retorno venha estruturado em JSON para o seu ms-search-service
   formats:
     - html
     - json
 
+# Cache Redis — evita re-bater nos motores para queries idênticas
+redis:
+  url: redis://searxng-redis:6379/0
+
 outgoing:
-  # Tempo limite para cada engine responder antes de ser descartada (evita travar o loop)
-  request_timeout: 4.0
-  max_request_timeout: 8.0
-  # Mantém conexões abertas em pool para acelerar as requisições subsequentes
+  request_timeout: 6.0
+  max_request_timeout: 12.0
   pool_connections: 100
   pool_maxsize: 20
 
 # ==============================================================================
-# GERENCIAMENTO DE ENGINES: PRIORIDADE E CONTROLE DE CAPTCHA
+# ENGINES: apenas os que aguentam volume sem CAPTCHA
 # ==============================================================================
 engines:
-  # --- MOTORES DE ALTA TOLERÂNCIA E EXCELENTES PARA JUSBRASIL/ESCAVADOR ---
+  # Bing — mais tolerante a scraping automatizado, boa cobertura de sites BR
   - name: bing
     engine: bing
     shortcut: bi
-    weight: 2.0         # Peso dobrado: Responde rápido e aguenta scraping massivo
+    weight: 2.0
     disabled: false
 
-  - name: brave
-    engine: brave
-    shortcut: br
-    weight: 1.5         # Excelente para indexação recente de notícias e portais
+  # DuckDuckGo full — melhor cobertura que o lite, sem CAPTCHA agressivo
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: dd
+    weight: 1.5
     disabled: false
 
- # - name: duckduckgo
- #  engine: duckduckgo
- #   shortcut: dd
- #   weight: 1.5         # Ótimo fallback para open_web (blogs, portais regionais)
- #   disabled: false
-
-  # --- MOTORES SENSÍVEIS (AJUSTADOS OU DESATIVADOS) ---
+  # Google — DESABILITADO: CAPTCHA em menos de 5 queries rápidas da mesma IP
   - name: google
     engine: google
     shortcut: go
-    weight: 0.3         # Peso reduzido: Se falhar ou der CAPTCHA, não quebra o score do RAG
-    disabled: false
+    disabled: true
 
+  # Brave — DESABILITADO: rate limit muito agressivo (429 após poucas queries)
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: true
+
+  # Startpage — DESABILITADO: replica os bloqueios do Google
   - name: startpage
     engine: startpage
     shortcut: sp
-    disabled: true      # TOTALMENTE DESATIVADO: Replicava os blocks do Google e poluía os logs
+    disabled: true
 
   - name: qwant
     engine: qwant
     shortcut: qw
-    disabled: true      # Desativado para economizar processamento local
+    disabled: true
 
   - name: yahoo
     engine: yahoo
     shortcut: yh
-    disabled: true      # Desativado (Bing já cobre a mesma base indexada)
-
-  - name: duckduckgo
-    engine: duckduckgo_lite   # Versão Lite: não processa JavaScript, eliminando erros de timeout
-    shortcut: ddg
-    timeout: 12.0             # Aumentado para tolerar o tempo de resposta da varredura
-    disabled: false
-    display_error_messages: true
+    disabled: true

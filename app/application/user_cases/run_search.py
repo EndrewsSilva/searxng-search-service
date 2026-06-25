@@ -3,7 +3,7 @@ import logging
 import random
 import re
 import unicodedata
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 from app.domain.models.search import SearchResponse, SearchResult, ProcessEntity
 from app.infra.search.html_parser import HTMLContentParser
@@ -25,22 +25,10 @@ class RunSearchUseCase:
     ]
 
     OPEN_WEB_TERMS = [
-        "processo",
-        "processos",
         "processo judicial",
-        "ação judicial",
-        "diário oficial",
-        "jurisprudência",
-        "tribunal",
-        "CNPJ",
-        "empresa",
-        "sócio",
-        "sanções",
-        "PEP",
-        "mídia negativa",
-        "corrupção",
-        "fraude",
-        "lavagem de dinheiro",
+        "CNPJ empresa sócio",
+        "fraude corrupção sanções",
+        "mídia negativa PEP",
     ]
 
     MAX_RESULTS = 25
@@ -60,7 +48,19 @@ class RunSearchUseCase:
 
     async def execute(self, query: str):
         try:
-            raw_results = await self._search_all_strategies(query)
+            search_results, legal_results = await asyncio.gather(
+                self._search_all_strategies(query),
+                self._direct_legal_discovery(query),
+                return_exceptions=True,
+            )
+
+            raw_results = []
+            for r in [search_results, legal_results]:
+                if isinstance(r, Exception):
+                    logger.error(f"[SEARCH FAIL] {str(r)}")
+                else:
+                    raw_results.extend(r)
+
         except Exception as e:
             logger.error(f"[SEARCH FAIL] Falha ao buscar: {str(e)}")
             return SearchResponse(query=query, total_found=0, results=[], process_entities=[])
@@ -211,6 +211,49 @@ class RunSearchUseCase:
             process_entities=process_entities,
         )
 
+    async def _direct_legal_discovery(self, query: str) -> list[dict]:
+        """Scrapa as páginas de busca dos sites jurídicos diretamente via FlareSolverr,
+        sem depender de motores de busca. Extrai links de processos encontrados."""
+        query_encoded = quote(query)
+        search_pages = [
+            f"https://www.jusbrasil.com.br/busca?q={query_encoded}",
+            f"https://www.escavador.com/busca?q={query_encoded}",
+        ]
+
+        print("\n" + "=" * 100)
+        print("[DIRECT LEGAL DISCOVERY] Acessando sites jurídicos diretamente via FlareSolverr")
+        for url in search_pages:
+            print(f"  → {url}")
+        print("=" * 100 + "\n")
+
+        htmls = await asyncio.gather(
+            *[self._fetch_with_resilience(url) for url in search_pages],
+            return_exceptions=True,
+        )
+
+        results = []
+        for url, html in zip(search_pages, htmls):
+            domain = self._extract_domain(url)
+
+            if isinstance(html, Exception) or not html or AntiBotDetector.is_blocked(html):
+                logger.warning(f"[DirectLegalDiscovery] Bloqueado ou falha: {url}")
+                print(f"[DIRECT LEGAL DISCOVERY] FALHA → {domain}")
+                continue
+
+            links = ProcessLinkExtractor.extract(html, url)
+            print(f"[DIRECT LEGAL DISCOVERY] OK → {domain} | {len(links)} process links extraídos")
+
+            for link in links:
+                results.append({
+                    "url": link,
+                    "title": f"{query} - {domain}",
+                    "content": "",
+                    "engine": "direct",
+                    "engines": ["direct"],
+                })
+
+        return results
+
     async def _search_all_strategies(self, query: str) -> list[dict]:
         all_results = []
         engines_used = set()
@@ -218,21 +261,15 @@ class RunSearchUseCase:
         sources_by_domain = {}
         sources_by_query = {}
 
-        legal_queries = [
-            {"type": "legal_domain", "query": f'"{query}" site:jusbrasil.com.br'},
-            {"type": "legal_domain", "query": f'"{query}" site:escavador.com'},
-            {"type": "legal_domain", "query": f'"{query}" site:econodata.com.br'},
-        ]
-
         open_queries = [{"type": "open_web", "query": f'"{query}"'}]
 
         for term in self.OPEN_WEB_TERMS:
             open_queries.append(
-                {"type": "open_web_term", "query": f'"{query}" "{term}"'}
+                {"type": "open_web_term", "query": f'"{query}" {term}'}
             )
 
         random.shuffle(open_queries)
-        search_queries = legal_queries + open_queries
+        search_queries = open_queries
 
         print("\n" + "=" * 100)
         print("[SEARCH START] - BUSCA AMPLA NEUTRA COM FILTRO DE QUALIDADE")

@@ -10,8 +10,6 @@ class SearxngClient:
 
     DEFAULT_ENGINES = [
         "bing",
-        "brave",
-        "google",
         "duckduckgo",
     ]
 

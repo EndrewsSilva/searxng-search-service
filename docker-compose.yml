@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: searxng-redis
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
@@ -9,6 +15,8 @@ services:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
+    depends_on:
+      - redis
 
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -20,4 +28,3 @@ services:
       - LOG_LEVEL=info
       - CAPTCHA_SOLVER=none
 
-  
