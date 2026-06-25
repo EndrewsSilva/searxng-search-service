@@ -10,7 +10,6 @@ class SearxngClient:
 
     DEFAULT_ENGINES = [
         "bing",
-        "duckduckgo",
     ]
 
     def __init__(self, base_url: str):

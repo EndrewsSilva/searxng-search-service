@@ -205,6 +205,20 @@ class RunSearchUseCase:
         results = sorted(results, key=lambda result: result.score or 0, reverse=True)
 
         scraped_entities = self._deduplicate_process_entities(process_entities)
+
+        # Coleta números encontrados no scraping e nos process_links para enriquecer via DataJud
+        extra_cnj: list[str] = []
+        for entity in scraped_entities:
+            extra_cnj.extend(entity.process_numbers)
+        for result in results:
+            for link in (result.process_links or []):
+                extra_cnj.extend(self._extract_cnj_from_url(link))
+
+        extra_cnj = [n for n in dict.fromkeys(extra_cnj) if n not in discovered_cnj_numbers]
+        if extra_cnj and self.datajud_client:
+            extra_datajud = await self.datajud_client.enrich_by_numbers(extra_cnj)
+            datajud_entities = self._deduplicate_process_entities(datajud_entities + extra_datajud)
+
         all_process_entities = self._deduplicate_process_entities(
             scraped_entities + datajud_entities
         )
