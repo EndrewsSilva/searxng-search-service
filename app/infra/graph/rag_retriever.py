@@ -154,3 +154,5 @@ SECTION_QUERIES = {
     "ramos_sensiveis": _query_ramos,
     "atividades_risco": _query_risco,
 }
+
+SECTIONS = SECTION_QUERIES
