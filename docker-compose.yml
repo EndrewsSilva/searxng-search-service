@@ -34,23 +34,6 @@ services:
     depends_on:
       - redis
 
-  flaresolverr:
-    build:
-      context: .
-      dockerfile: Dockerfile.flaresolverr
-    container_name: flaresolverr
-    restart: unless-stopped
-    ports:
-      - "8191:8191"
-    environment:
-      - LOG_LEVEL=info
-      - CAPTCHA_SOLVER=none
-      - DRIVER=nodriver
-    shm_size: 1gb
-    security_opt:
-      - seccomp=unconfined
-    cap_add:
-      - SYS_ADMIN
 
 volumes:
   neo4j_data:
