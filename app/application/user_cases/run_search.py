@@ -26,6 +26,15 @@ class RunSearchUseCase:
         "econodata.com.br",
     ]
 
+    PROFILE_DOMAINS = [
+        "consultasocio.com",
+        "cnpj.biz",
+        "advdinamico.com.br",
+        "casadosdados.com.br",
+        "cnpjcheck.com.br",
+        "empresas.serasaexperian.com.br",
+    ]
+
     OPEN_WEB_TERMS = [
         "processo judicial",
         "CNPJ empresa sócio",
@@ -267,27 +276,31 @@ class RunSearchUseCase:
         return await self._fetch_with_resilience(url)
 
     async def _direct_legal_discovery(self, query: str) -> list[dict]:
-        """Scrapa as páginas de busca dos sites jurídicos diretamente via FlareSolverr,
-        sem depender de motores de busca. Extrai links de processos encontrados."""
+        """Scrapa sites jurídicos e de perfil diretamente via FlareSolverr."""
         query_encoded = quote(query)
+        query_slug = self._slugify(query)
+
         jusbrasil_url = f"https://www.jusbrasil.com.br/busca?q={query_encoded}"
         escavador_url = f"https://www.escavador.com/busca?q={query_encoded}"
+        consultasocio_url = f"https://www.consultasocio.com/q/sa/{query_slug}"
 
         jus_label = "JusBrasil (autenticado)" if self.jusbrasil_session else "JusBrasil"
 
         print("\n" + "=" * 100)
-        print("[DIRECT LEGAL DISCOVERY] Acessando sites jurídicos diretamente")
+        print("[DIRECT LEGAL DISCOVERY] Acessando sites jurídicos e de perfil diretamente")
         print(f"  → {jusbrasil_url} [{jus_label}]")
         print(f"  → {escavador_url}")
+        print(f"  → {consultasocio_url} [ConsultaSocio]")
         print("=" * 100 + "\n")
 
         htmls = await asyncio.gather(
             self._fetch_jusbrasil(jusbrasil_url),
             self._fetch_with_resilience(escavador_url),
+            self._fetch_with_resilience(consultasocio_url),
             return_exceptions=True,
         )
 
-        search_pages = [jusbrasil_url, escavador_url]
+        search_pages = [jusbrasil_url, escavador_url, consultasocio_url]
         results = []
         for url, html in zip(search_pages, htmls):
             domain = self._extract_domain(url)
@@ -300,11 +313,8 @@ class RunSearchUseCase:
             links = ProcessLinkExtractor.extract(html, url)
             print(f"[DIRECT LEGAL DISCOVERY] OK → {domain} | {len(links)} process links extraídos")
 
-            # Cache fetched HTML so the scraping loop reuses it without re-fetching
             self._page_cache[url] = html
 
-            # Add the search/discovery page itself to the scraping queue:
-            # its __NEXT_DATA__ contains CNJ process numbers not available in profile pages
             results.append({
                 "url": url,
                 "title": f"{query} - {domain}",
@@ -458,6 +468,12 @@ class RunSearchUseCase:
             has_exact_name or has_query_slug
         ):
             score += 220
+
+        # Domínios de perfil societário — alta precisão, slug exato = uma única pessoa
+        if domain in self.PROFILE_DOMAINS and has_query_slug:
+            score += 280
+        elif domain in self.PROFILE_DOMAINS and has_exact_name:
+            score += 180
 
         if domain == "econodata.com.br" and has_exact_name:
             score += 120

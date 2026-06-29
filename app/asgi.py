@@ -1,9 +1,17 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import Response
 
+from pydantic import BaseModel
 from app.domain.models.search import SearchRequest
 from app.domain.models.compliance import ComplianceRequest
+
+
+class ComplianceReportPdfRequest(BaseModel):
+    """Recebe o JSON completo retornado por POST /compliance-report."""
+    report: dict
 from app.infra.containers.services_container import (
     get_flaresolverr_client,
     get_jusbrasil_session,
@@ -17,6 +25,11 @@ APP_SETTINGS = AppSettings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.infra.graph import embeddings as emb
+    from app.infra.graph.schema import setup_schema
+    from app.infra.containers.services_container import get_neo4j_client
+    asyncio.create_task(emb.prewarm_async())
+    asyncio.create_task(setup_schema(get_neo4j_client()))
     yield
     session = get_jusbrasil_session()
     if session:
@@ -68,6 +81,29 @@ async def compliance_report(
             status_code=502,
             detail={"success": False, "error": str(e)},
         )
+
+
+@app.post("/compliance-report/pdf")
+async def compliance_report_pdf(
+    payload: ComplianceReportPdfRequest,
+):
+    """
+    Converte um relatório de compliance (JSON) em PDF.
+    Recebe o JSON retornado por POST /compliance-report e gera o PDF.
+    """
+    try:
+        from app.infra.report.pdf_generator import generate_pdf
+        from app.domain.models.compliance import ComplianceReport as CR
+        report = CR(**payload.report)
+        pdf_bytes = generate_pdf(report)
+        safe_name = report.query.replace(" ", "_")[:60]
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="relatorio_{safe_name}.pdf"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"success": False, "error": str(e)})
 
 
 @app.post("/resolve")

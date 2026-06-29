@@ -25,6 +25,7 @@ class ComplianceReport(BaseModel):
     overall_risk: str = "N/A"
     graph_stats: GraphStats = Field(default_factory=GraphStats)
     raw_process_count: int = 0
+    references: list[dict] = Field(default_factory=list)  # [{"num": 1, "label": "...", "url": "..."}]
 
 
 class ComplianceRequest(BaseModel):

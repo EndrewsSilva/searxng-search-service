@@ -32,7 +32,10 @@ class FlareSolverrClient:
             payload["proxy"] = proxy_url
 
         try:
-            async with httpx.AsyncClient(timeout=timeout_ms / 1000 + 15) as client:
+            read_timeout = timeout_ms / 1000 + 15
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=8.0, read=read_timeout, write=10.0, pool=5.0)
+            ) as client:
                 logger.info(f"[FlareSolverr] Resolving url={url}")
 
                 response = await client.post(

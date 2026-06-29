@@ -60,23 +60,25 @@ class GraphBuilder:
             await self._add_process(target_id, proc)
             stats["processes"] += 1
 
-        # 3. Chunks + extração de entidades dos resultados de busca
+        # 3. Chunks: coleta todos os textos primeiro, depois embeds em um batch
+        all_chunks: list[dict] = []
         for result in response.results:
             text = result.html_full or result.snippet or ""
             if not text:
                 continue
-
-            # Chunking + embeddings
             chunks = self.chunker.chunk(text, source_url=result.url, source_type="web")
-            if chunks:
-                texts = [c["text"] for c in chunks]
-                vectors = emb.embed(texts)
-                for chunk, vector in zip(chunks, vectors):
-                    chunk["embedding"] = vector
-                    await self._merge_chunk(chunk, target_id)
-                stats["chunks"] += len(chunks)
+            all_chunks.extend(chunks)
 
-            # Extração de entidades do snippet
+        if all_chunks:
+            all_texts = [c["text"] for c in all_chunks]
+            vectors = await emb.embed_async(all_texts)
+            for chunk, vector in zip(all_chunks, vectors):
+                chunk["embedding"] = vector
+                await self._merge_chunk(chunk, target_id)
+            stats["chunks"] = len(all_chunks)
+
+        # 4. Extração de entidades do snippet (rápido sem HF_TOKEN)
+        for result in response.results:
             extracted = await self.extractor.extract(result.snippet or result.html_full or "")
             n, r = await self._integrate_extracted(target_id, extracted, result.url)
             stats["companies"] += n

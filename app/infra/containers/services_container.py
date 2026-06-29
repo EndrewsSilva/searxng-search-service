@@ -6,6 +6,7 @@ from app.infra.search.searxng_client import SearxngClient
 from app.infra.search.flaresolverr_client import FlareSolverrClient
 from app.infra.search.datajud_client import DataJudClient
 from app.infra.search.jusbrasil_session import JusBrasilSession
+from app.infra.search.agent_orchestrator import AgentOrchestrator
 from app.application.user_cases.run_search import RunSearchUseCase
 from app.infra.graph.neo4j_client import Neo4jClient
 from app.application.user_cases.run_compliance_report import RunComplianceReportUseCase
@@ -28,7 +29,6 @@ def get_flaresolverr_client():
 
 @lru_cache
 def get_datajud_client() -> DataJudClient:
-    # Usa chave do .env se configurada, caso contrário usa a chave pública do CNJ
     key = get_settings().DATAJUD_API_KEY or DataJudClient.PUBLIC_KEY
     return DataJudClient(api_key=key)
 
@@ -47,6 +47,7 @@ def get_jusbrasil_session() -> Optional[JusBrasilSession]:
 
 @lru_cache
 def get_run_search_use_case():
+    """Used by the /search endpoint (kept for backwards compatibility)."""
     return RunSearchUseCase(
         search_client=get_search_client(),
         flaresolverr_client=get_flaresolverr_client(),
@@ -66,9 +67,19 @@ def get_neo4j_client() -> Neo4jClient:
 
 
 @lru_cache
+def get_agent_orchestrator() -> AgentOrchestrator:
+    return AgentOrchestrator(
+        flaresolverr_client=get_flaresolverr_client(),
+        search_client=get_search_client(),
+        jusbrasil_session=get_jusbrasil_session(),
+        datajud_client=get_datajud_client(),
+    )
+
+
+@lru_cache
 def get_compliance_use_case() -> RunComplianceReportUseCase:
     return RunComplianceReportUseCase(
-        run_search=get_run_search_use_case(),
+        agent_orchestrator=get_agent_orchestrator(),
         neo4j=get_neo4j_client(),
         hf_token=get_settings().HF_TOKEN,
     )
